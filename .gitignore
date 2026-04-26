@@ -8,6 +8,7 @@ data/generator/*.txt
 *.swp
 *.sublime-project
 *.sublime-workspace
+.vscode/settings.json
 
 # Created by https://www.toptal.com/developers/gitignore/api/node
 # Edit at https://www.toptal.com/developers/gitignore?templates=node
