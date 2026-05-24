@@ -744,11 +744,26 @@ export class ImportExportSheet {
           filterND.append(opt);
         });
 
-        // Atualizar select
+        // Atualizar select agrupado por livro
         select.innerHTML = '';
+        const byLivro = {};
         filtered
           .sort((a, b) => ndSortKey(a.nd) - ndSortKey(b.nd) || a.name.localeCompare(b.name))
           .forEach((m) => {
+            if (!byLivro[m._livro]) byLivro[m._livro] = [];
+            byLivro[m._livro].push(m);
+          });
+
+        Object.entries(byLivro).forEach(([livro, items]) => {
+          if (!livroVal) {
+            // Separador com nome do livro como option desabilitado
+            const header = document.createElement('option');
+            header.disabled = true;
+            header.textContent = `── ${livro} ──`;
+            header.style.cssText = 'background: #4a4a6a; color: #fff; font-weight: bold;';
+            select.append(header);
+          }
+          items.forEach((m) => {
             const option = createElement('option', {
               value: m.name,
               innerHTML: `${m.name} (ND ${m.nd})`,
@@ -756,6 +771,7 @@ export class ImportExportSheet {
             option._monsterData = m;
             select.append(option);
           });
+        });
       };
 
       filterLivro.addEventListener('change', updateSelect);
