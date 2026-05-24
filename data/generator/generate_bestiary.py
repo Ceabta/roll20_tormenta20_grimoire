@@ -331,7 +331,7 @@ def build_description(m):
     subtype_str = f' ({m["subtype"]})' if m['subtype'] else ''
     type_line = f'{m["type"]}{subtype_str} {m["size"]}{role_str}'.strip()
     if type_line:
-        parts.append(f'Tipo: {type_line}')
+        parts.append(type_line)
     parts.append(f'ND: {m["nd"]}')
 
     stat_parts = []

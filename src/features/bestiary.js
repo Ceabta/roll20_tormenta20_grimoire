@@ -8,7 +8,7 @@
 
 
 import { openDialog } from '../common/dialog-manager';
-import { createElement } from '../common/helpers';
+import { createElement, enhanceElement } from '../common/helpers';
 import { ImportExportSheet } from './import-export';
 
 // ---------------------------------------------------------------------------
@@ -48,16 +48,16 @@ const SKILL_NAME_TO_FIELD = {
 
 // Atributo base de cada perícia (para preservar o atributo correto no import)
 const SKILL_ATTR_MAP = {
-  acrobacia:    'des', adestramento: 'car', atletismo:    'for',
-  atuacao:      'car', cavalgar:     'des', conhecimento: 'int',
-  cura:         'sab', diplomacia:   'car', enganacao:    'car',
-  fortitude:    'con', furtividade:  'des', guerra:       'int',
-  iniciativa:   'des', intimidacao:  'car', intuicao:     'sab',
-  investigacao: 'int', jogatina:     'car', ladinagem:    'des',
-  luta:         'for', misticismo:   'int', nobreza:      'int',
-  percepcao:    'sab', pilotagem:    'des', pontaria:     'des',
-  reflexos:     'des', religiao:     'sab', sobrevivencia:'sab',
-  vontade:      'sab',
+  acrobacia: 'des', adestramento: 'car', atletismo: 'for',
+  atuacao: 'car', cavalgar: 'des', conhecimento: 'int',
+  cura: 'sab', diplomacia: 'car', enganacao: 'car',
+  fortitude: 'con', furtividade: 'des', guerra: 'int',
+  iniciativa: 'des', intimidacao: 'car', intuicao: 'sab',
+  investigacao: 'int', jogatina: 'car', ladinagem: 'des',
+  luta: 'for', misticismo: 'int', nobreza: 'int',
+  percepcao: 'sab', pilotagem: 'des', pontaria: 'des',
+  reflexos: 'des', religiao: 'sab', sobrevivencia: 'sab',
+  vontade: 'sab',
 };
 
 // Fórmulas de atributo JDA por atributo
@@ -232,6 +232,7 @@ export function monsterToSheetData(monster) {
       ? `RD: ${Object.entries(monster.damage_reduction).map(([k, v]) => (k === 'normal' ? `${v}` : `${v} a ${k}`)).join(', ')}`
       : '',
     (monster.vulnerabilities || []).length > 0 ? `Vulnerabilidades: ${monster.vulnerabilities.join(', ')}` : '',
+    (monster.other_defenses || []).length > 0 ? monster.other_defenses.join(', ') : '',
   ].filter(Boolean).join(' | ');
 
   // PV e PM
@@ -249,7 +250,12 @@ export function monsterToSheetData(monster) {
   // Tamanho
   data.tamanho = String(SIZE_MAP[monster.size] ?? 0);
 
-  data.charnotes = '';
+  // Bônus condicionais de perícias (ex: "+25 em áreas de Tormenta") → Anotações
+  const skillsContext = monster.skills_context || {};
+  const contextNotes = Object.entries(skillsContext)
+    .map(([skill, val]) => `${skill}: ${val}`)
+    .join('\n');
+  data.charnotes = contextNotes;
 
   // Tesouro
   data.menace_treasures = monster.treasure || '';
@@ -502,11 +508,18 @@ export function openMonsterImportDialog({ monster, importExportSheet }) {
     innerHTML: 'Importar Monstro',
   });
 
+  const cancelButton = createElement('button', {
+    classes: 'btn',
+    innerHTML: 'Cancelar',
+  });
+  cancelButton.style.marginLeft = '8px';
+
   importButton.addEventListener('click', () => {
     try {
       errorMessage.textContent = '';
       successMessage.textContent = '';
       importButton.disabled = true;
+      cancelButton.disabled = true;
       importButton.textContent = 'Importando...';
 
       const sheetData = monsterToSheetData(monster);
@@ -514,16 +527,32 @@ export function openMonsterImportDialog({ monster, importExportSheet }) {
         success: () => {
           importExportSheet.deleteOldData();
           importExportSheet.importNewData(sheetData);
+          // Fechar o dialog de confirmação após importar
+          const confirmDialog = document.querySelector(`div.ui-dialog:has(#${dialogId}-content)`);
+          if (confirmDialog) {
+            const closeBtn = confirmDialog.querySelector('button.ui-dialog-titlebar-close');
+            if (closeBtn) closeBtn.click();
+          }
+          successMessage.textContent = 'Monstro importado com sucesso!';
           importButton.textContent = 'Importar Monstro';
           importButton.disabled = false;
-          successMessage.textContent = 'Monstro importado com sucesso!';
+          cancelButton.disabled = false;
         },
       });
     } catch (e) {
       errorMessage.textContent = 'Falha ao importar o monstro.';
       importButton.textContent = 'Importar Monstro';
       importButton.disabled = false;
+      cancelButton.disabled = false;
       console.error({ e });
+    }
+  });
+
+  cancelButton.addEventListener('click', () => {
+    const confirmDialog = document.querySelector(`div.ui-dialog:has(#${dialogId}-content)`);
+    if (confirmDialog) {
+      const closeBtn = confirmDialog.querySelector('button.ui-dialog-titlebar-close');
+      if (closeBtn) closeBtn.click();
     }
   });
 
@@ -544,8 +573,165 @@ export function openMonsterImportDialog({ monster, importExportSheet }) {
           successMessage,
           errorMessage,
           importButton,
+          cancelButton,
         ],
       }),
     ],
   });
+}
+
+
+// ---------------------------------------------------------------------------
+// BestiarySheet — integração com a ficha
+// ---------------------------------------------------------------------------
+
+/**
+ * Gerencia o botão de importar monstro na ficha.
+ */
+export class BestiarySheet {
+  /**
+   * @param {Object} props
+   * @param {EnhancedHTMLElement} props.iframe
+   * @param {Array} props.bookItems - db.book items
+   * @param {Object} props.character
+   * @param {ImportExportSheet} props.importExportSheet
+   */
+  constructor({ iframe, bookItems, character, importExportSheet }) {
+    this.iframe = iframe;
+    this.bookItems = bookItems;
+    this.character = character;
+    this.importExportSheet = importExportSheet;
+    this._dialogHeader = null;
+  }
+
+  /** @type {EnhancedHTMLElement} */
+  get dialogHeader() {
+    if (this._dialogHeader === null) {
+      const characterId = this.character.get('id');
+      const selector = `iframe[name="iframe_${characterId}"]`;
+      const rawIframe = document.querySelector(selector);
+      const header = rawIframe
+        .closest('div.ui-dialog')
+        .querySelector('div.ui-dialog-titlebar');
+      this._dialogHeader = enhanceElement(header);
+    }
+    return this._dialogHeader;
+  }
+
+  /** Encontra todos os monstros nos itens do livro. */
+  getMonsters() {
+    const monsters = [];
+    const walk = (items) => {
+      for (const item of items || []) {
+        if (item.type === 'item' && item._monster) {
+          monsters.push(item);
+        } else if (item.type === 'folder') {
+          walk(item.items);
+        }
+      }
+    };
+    const bestiary = this.bookItems.find((b) => b.name === 'Bestiário');
+    if (bestiary) walk(bestiary.items);
+    return monsters;
+  }
+
+  /** Carrega o botão na ficha. */
+  load() {
+    if (this.iframe.querySelector('#t20-bestiary-button') || document.querySelector('#t20-bestiary-button')) return;
+
+    const span = this.dialogHeader.getElement('span.ui-dialog-title');
+    if (!span) return;
+
+    const button = createElement('button', {
+      id: 't20-bestiary-button',
+      classes: 'btn tormenta20-import-export-button',
+      innerHTML: '🐲 Escolher Monstro',
+    });
+
+    button.addEventObserver('click', () => {
+      this.openMonsterListDialog();
+    });
+
+    span.insertBefore(button, span.childNodes[4]);
+  }
+
+  /** Abre o dialog de listagem de monstros. */
+  openMonsterListDialog() {
+    const monsters = this.getMonsters();
+    if (!monsters.length) return;
+
+    // Agrupar por ND
+    const byND = {};
+    for (const item of monsters) {
+      const nd = item._monster?.nd || '?';
+      if (!byND[nd]) byND[nd] = [];
+      byND[nd].push(item);
+    }
+
+    const ndKeys = Object.keys(byND).sort((a, b) => {
+      const toNum = (s) => {
+        if (s === 'S+') return 998;
+        if (s === 'S') return 997;
+        if (s.includes('/')) {
+          const [x, y] = s.split('/');
+          return parseInt(x) / parseInt(y);
+        }
+        return parseFloat(s) || 0;
+      };
+      return toNum(a) - toNum(b);
+    });
+
+    const select = createElement('select', {});
+    select.style.cssText = 'width:100%;margin-bottom:8px;padding:4px;';
+
+    for (const nd of ndKeys) {
+      const group = document.createElement('optgroup');
+      group.label = `ND ${nd}`;
+      for (const item of byND[nd]) {
+        const opt = document.createElement('option');
+        opt.value = JSON.stringify(item._monster);
+        opt.textContent = item.name;
+        group.appendChild(opt);
+      }
+      select.appendChild(group);
+    }
+
+    const listDialogId = `bestiary-list-${this.character.get('id')}`;
+
+    const importBtn = createElement('button', {
+      classes: 'btn',
+      innerHTML: 'Importar Monstro',
+    });
+    importBtn.style.marginTop = '8px';
+
+    importBtn.addEventListener('click', () => {
+      // Fechar o dialog de lista
+      const listDialog = document.querySelector(`div.ui-dialog:has(#${listDialogId}-content)`);
+      if (listDialog) {
+        const closeBtn = listDialog.querySelector('button.ui-dialog-titlebar-close');
+        if (closeBtn) closeBtn.click();
+      }
+      const monster = JSON.parse(select.value);
+      openMonsterImportDialog({
+        monster,
+        importExportSheet: this.importExportSheet,
+      });
+    });
+
+    openDialog({
+      id: listDialogId,
+      title: 'Escolher Monstro',
+      content: [
+        createElement('div', {
+          append: [
+            createElement('p', {
+              innerHTML: 'Selecione um monstro para importar na ficha:',
+            }),
+            select,
+            importBtn,
+          ],
+        }),
+      ],
+    });
+  }
 }

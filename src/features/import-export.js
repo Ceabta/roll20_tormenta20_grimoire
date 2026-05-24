@@ -642,21 +642,31 @@ export class ImportExportSheet {
   }
 
   addMonsterImportButton({ bookItems }) {
-    // Extrai todos os monstros do bestiário
+    // Extrai todos os monstros do bestiário com info de livro e seção
     const monsters = [];
-    const extractMonsters = (items) => {
+    const extractMonsters = (items, livro, secao = '') => {
       items.forEach((item) => {
-        if (item.type === 'folder') extractMonsters(item.items);
-        else if (item._monster) monsters.push(item._monster);
+        if (item.type === 'folder') {
+          extractMonsters(item.items, livro, item.name);
+        } else if (item._monster) {
+          monsters.push({ ...item._monster, _livro: livro, _secao: secao });
+        }
       });
     };
     const bestiary = bookItems.find((item) => item.name === 'Bestiário');
-    if (bestiary) extractMonsters(bestiary.items);
+    if (bestiary) {
+      bestiary.items.forEach((subFolder) => {
+        if (subFolder.type === 'folder') {
+          extractMonsters(subFolder.items, subFolder.name);
+        }
+      });
+    }
 
-    // Só adiciona o botão se houver monstros disponíveis
     if (!monsters.length) return;
 
     const span = this.dialogHeader.getElement('span.ui-dialog-title');
+    if (document.querySelector('#t20-monster-import-button')) return;
+
     const monsterButton = createElement('button', {
       id: 't20-monster-import-button',
       classes: 'btn tormenta20-import-export-button',
@@ -671,45 +681,87 @@ export class ImportExportSheet {
         classes: 'tormenta20-error-message',
       });
 
-      // Select de monstros agrupados por ND
-      const select = createElement('select', {
-        classes: 'ui-autocomplete-input',
-        style: 'width: 100%; margin-bottom: 8px;',
+      // --- Filtros ---
+      const livros = [...new Set(monsters.map((m) => m._livro))];
+
+      const filterLivro = createElement('select', {
+        style: 'margin-bottom: 6px; width: 100%;',
+      });
+      const optAll = createElement('option', { value: '', innerHTML: 'Todos os livros' });
+      filterLivro.append(optAll);
+      livros.forEach((l) => {
+        filterLivro.append(createElement('option', { value: l, innerHTML: l }));
       });
 
-      // Agrupa por ND
-      const byND = monsters.reduce((acc, m) => {
-        const key = `ND ${m.nd}`;
-        if (!acc[key]) acc[key] = [];
-        acc[key].push(m);
-        return acc;
-      }, {});
+      const filterNome = createElement('input', {
+        type: 'text',
+        placeholder: 'Buscar por nome...',
+        style: 'width: 100%; margin-bottom: 6px; padding: 4px; box-sizing: border-box;',
+      });
 
-      // Ordena NDs
+      const filterND = createElement('select', {
+        style: 'margin-bottom: 8px; width: 100%;',
+      });
+      filterND.append(createElement('option', { value: '', innerHTML: 'Todos os NDs' }));
+
+      // --- Select de monstros ---
+      const select = createElement('select', {
+        classes: 'ui-autocomplete-input',
+        style: 'width: 100%; margin-bottom: 8px; height: 200px;',
+        size: '10',
+      });
+
       const ndSortKey = (nd) => {
-        const n = nd.replace('ND ', '');
-        if (n.includes('/')) {
-          const [a, b] = n.split('/');
+        if (nd === 'S+') return 998;
+        if (nd === 'S') return 997;
+        if (nd.includes('/')) {
+          const [a, b] = nd.split('/');
           return parseInt(a) / parseInt(b);
         }
-        return parseFloat(n) || 999;
+        return parseFloat(nd) || 0;
       };
-      const sortedNDs = Object.keys(byND).sort((a, b) => ndSortKey(a) - ndSortKey(b));
 
-      sortedNDs.forEach((nd) => {
-        const group = createElement('optgroup', { label: nd });
-        byND[nd]
-          .sort((a, b) => a.name.localeCompare(b.name))
+      const updateSelect = () => {
+        const livroVal = filterLivro.value;
+        const nomeVal = filterNome.value.toLowerCase();
+        const ndVal = filterND.value;
+
+        const filtered = monsters.filter((m) => {
+          if (livroVal && m._livro !== livroVal) return false;
+          if (nomeVal && !m.name.toLowerCase().includes(nomeVal)) return false;
+          if (ndVal && m.nd !== ndVal) return false;
+          return true;
+        });
+
+        // Atualizar NDs disponíveis
+        const nds = [...new Set(filtered.map((m) => m.nd))].sort((a, b) => ndSortKey(a) - ndSortKey(b));
+        const currentND = filterND.value;
+        filterND.innerHTML = '';
+        filterND.append(createElement('option', { value: '', innerHTML: 'Todos os NDs' }));
+        nds.forEach((nd) => {
+          const opt = createElement('option', { value: nd, innerHTML: `ND ${nd}` });
+          if (nd === currentND) opt.selected = true;
+          filterND.append(opt);
+        });
+
+        // Atualizar select
+        select.innerHTML = '';
+        filtered
+          .sort((a, b) => ndSortKey(a.nd) - ndSortKey(b.nd) || a.name.localeCompare(b.name))
           .forEach((m) => {
             const option = createElement('option', {
               value: m.name,
-              innerHTML: m.name,
+              innerHTML: `${m.name} (ND ${m.nd})`,
             });
             option._monsterData = m;
-            group.append(option);
+            select.append(option);
           });
-        select.append(group);
-      });
+      };
+
+      filterLivro.addEventListener('change', updateSelect);
+      filterNome.addEventListener('input', updateSelect);
+      filterND.addEventListener('change', updateSelect);
+      updateSelect();
 
       const importBtn = createElement('button', {
         classes: 'btn',
@@ -723,7 +775,6 @@ export class ImportExportSheet {
           importBtn.disabled = true;
           importBtn.textContent = 'Importando...';
 
-          // Encontra o monstro selecionado
           const selectedName = select.value;
           const monster = monsters.find((m) => m.name === selectedName);
           if (!monster) {
@@ -738,10 +789,8 @@ export class ImportExportSheet {
             success: () => {
               this.deleteOldData();
               this.importNewData(sheetData);
-
               this.character.save({ name: monster.name });
               this.character.view?.model?.set('name', monster.name);
-
               importBtn.textContent = 'Importar';
               importBtn.disabled = false;
               successMessage.textContent = `"${monster.name}" importado com sucesso!`;
@@ -757,16 +806,17 @@ export class ImportExportSheet {
 
       openDialog({
         id: `t20-monster-import-dialog-${this.character.get('id')}`,
-        title: `Importar Monstro para ${this.character.get('name')}`,
+        title: 'Importar monstro',
         content: [
           createElement('div', {
             classes: 'tormenta20-import-content',
             append: [
               createElement('p', {
-                innerHTML:
-                  '<b>Atenção</b>: Não é possível desfazer essa operação, todos os dados existentes serão substituídos.',
+                innerHTML: '<b>Atenção</b>: Não é possível desfazer essa operação, todos os dados existentes serão substituídos.',
               }),
-              createElement('p', { innerHTML: 'Selecione o monstro:' }),
+              filterLivro,
+              filterNome,
+              filterND,
               select,
               successMessage,
               errorMessage,
@@ -777,7 +827,6 @@ export class ImportExportSheet {
       });
     });
 
-    // Insere antes do botão Importar (índice 2 no span)
     span.insertBefore(monsterButton, span.childNodes[2]);
   }
 
